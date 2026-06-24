@@ -1,0 +1,30 @@
+# Icarus — Python dependencies
+#
+# Unpinned: pip install -r requirements.txt grabs the latest of each.
+#
+# SYSTEM prerequisite — the tesseract engine + Dutch data (NOT a pip package):
+#   Debian/Ubuntu:  sudo apt install tesseract-ocr tesseract-ocr-nld
+#   Windows:        install the UB-Mannheim tesseract build, tick "Dutch" during setup,
+#                   and make sure tesseract.exe is on PATH
+#   ffmpeg is only for the live daemon (v4l2 capture), not for replay:
+#                   sudo apt install ffmpeg
+#
+# OCR fast path (tesserocr) is Linux/macOS only — it ships prebuilt wheels there but NONE for
+# Windows, so the marker below skips it on Windows and the OCR engine auto-falls back to the
+# pytesseract CLI. The Debian box gets the fast in-process path straight from the wheel — it
+# needs only the apt packages above, no compiler.
+#
+# Freeze the resolved versions for reproducible deploys once it works:
+#   pip freeze > requirements.lock.txt
+
+# --- core image / OCR — REQUIRED by replay_triage.py and the live pipeline ---
+opencv-python-headless                     # use plain opencv-python if you need cv2 GUI windows
+numpy
+tesserocr; platform_system != "Windows"    # in-process libtesseract (fast path); Linux/macOS wheels only
+pytesseract                                # CLI path: the automatic fallback (and the only OCR on Windows)
+Pillow                                     # OCR engine image input (tesserocr) + framegrabber.py frame decode
+
+# --- live capture + frontend server — NOT needed to run replay_triage.py ---
+Flask                                      # app.py — order board server
+requests                                   # daemon.py — frame/event POSTs to the frontend
+psycopg2-binary                            # router.py — Postgres / pgRouting (binary = no build deps)

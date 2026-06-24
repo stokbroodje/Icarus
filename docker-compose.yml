@@ -1,0 +1,102 @@
+# Resource budget mirrors the katana box (4 cores / 3.7 Gi, ~0.8 Gi free with the kiosk
+# up): containers capped at ~3 CPUs / ~2 Gi so a core + RAM stay with the host.
+# cpus is a hard ceiling; mem_limit OOM-kills — watch `docker stats` on first runs.
+#
+# Layout (bind-mounted under /app, on PYTHONPATH):
+#   /app/icarus       the package (code + resolve/data/adressen.csv)
+#   /app/sim          sim.py / frontendsim.py / frames/
+#   /app/out          sim output (sim.json, streetwords.txt) -> host sim/out/
+services:
+  db:
+    image: pgrouting/pgrouting:17-3.5-3.7
+    container_name: routing_groningen
+    cpus: "1.0"
+    mem_limit: 640m
+    shm_size: 128m
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: routing_groningen
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db:/db:ro
+    entrypoint: >
+      bash -c "docker-entrypoint.sh postgres &
+      until pg_isready -U postgres; do sleep 1; done &&
+      if [ ! -f /var/lib/postgresql/data/.restored ]; then
+        psql -U postgres -c \"CREATE ROLE katana LOGIN;\" &&
+        pg_restore -U postgres -d routing_groningen /db/routing_groningen.dump &&
+        touch /var/lib/postgresql/data/.restored;
+      fi &&
+      wait"
+
+  sim:
+    build: .
+    working_dir: /app
+    cpus: "2.0"                  # matches ICARUS_OCR_WORKERS — one core per worker
+    mem_limit: 1152m
+    volumes:
+      - ./icarus:/app/icarus:ro
+      - ./sim:/app/sim:ro
+      - ./sim/out:/app/out       # writable: sim.json + streetwords.txt land here
+    environment:
+      PYTHONPATH: /app
+      ICARUS_FRAMES: /app/sim/frames/*.png
+      ICARUS_OCR_WORKERS: "2"
+
+  # the order board (Flask + SSE) — same image, different command
+  app:
+    build: .
+    command: python /app/icarus/frontend/app.py
+    cpus: "0.5"
+    mem_limit: 256m
+    depends_on:
+      - db
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./icarus:/app/icarus:ro
+    environment:
+      DB_HOST: db
+      DB_PASSWORD: changeme
+
+  # replay driver, behind a profile so plain `up` never starts it:
+  #   docker compose run --rm frontendsim                              (prompts)
+  #   docker compose run --rm frontendsim python /app/sim/frontendsim.py 1500
+  frontendsim:
+    build: .
+    profiles: ["replay"]
+    command: python /app/sim/frontendsim.py
+    stdin_open: true
+    tty: true
+    cpus: "0.5"
+    mem_limit: 512m
+    depends_on:
+      - app
+    volumes:
+      - ./icarus:/app/icarus:ro
+      - ./sim:/app/sim:ro
+      - ./sim/out:/app/out:ro
+    environment:
+      ICARUS_BOARD: http://app:5000
+      ICARUS_SIM_JSON: /app/out/sim.json
+      ICARUS_FRAMES_DIR: /app/sim/frames
+      ICARUS_REPLAY_DELAY: "0.5"
+  notebook:
+    build: .
+    command: jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''
+    cpus: "1.0"
+    mem_limit: 1024m
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./icarus:/app/icarus:ro
+      - ./sim:/app/sim:ro
+      - ./sim/out:/app/out
+      - ./notebooks:/app/notebooks   # your .ipynb files live here on the host
+    environment:
+      PYTHONPATH: /app
+volumes:
+  pgdata:

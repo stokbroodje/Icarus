@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Pizzaboer Planner Prototype</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        crossorigin=""/>
+  <style>
+    :root {
+      /* palette sampled from the POS board */
+      --bg: #02111f;          /* deep navy */
+      --panel: #06182a;       /* sidebar / header navy */
+      --panel-2: #0e2438;      /* hover / raised navy */
+      --border: #173049;
+      --text: #eef2f6;
+      --muted: #9fb0c2;
+      --accent: #1f6fd6;      /* in-store / oven blue */
+      --accent-2: #3d8bef;
+      --danger: #ab0001;      /* POS red  (late) */
+      --warn:   #fb9600;      /* POS orange (warming) */
+      --ok:     #0a7a12;      /* POS green (fresh) */
+      --cyan:   #1a8fa6;      /* on-route teal */
+      --grey:   #858681;      /* timed / scheduled */
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI",
+            Roboto, Helvetica, Arial, sans-serif;
+      display: grid;
+      grid-template-columns: 380px 1fr;
+      grid-template-rows: 56px 1fr;
+      grid-template-areas:
+        "header header"
+        "sidebar map";
+      height: 100vh;
+      transition: grid-template-columns 0.2s ease;
+    }
+    body.hide-sidebar {
+      grid-template-columns: 0px 1fr;
+    }
+    body.hide-sidebar aside {
+      opacity: 0;
+      border-right-color: transparent;
+    }
+    header {
+      grid-area: header;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 16px; gap: 16px;
+    }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .brand-logo { width: 30px; height: 30px; color: var(--text); display: flex; flex-shrink: 0; }
+    .brand-logo svg { width: 100%; height: 100%; }
+    .brand-text { display: flex; flex-direction: column; line-height: 1.05; }
+    .brand-title { font-size: 16px; font-weight: 700; letter-spacing: 0.3px; }
+    .brand-sub { font-size: 10px; font-weight: 600; color: var(--muted); letter-spacing: 1px; text-transform: uppercase; }
+    .stats { display: flex; gap: 14px; margin-left: auto; align-items: center; }
+    .stat { color: var(--muted); font-size: 12px; }
+    .stat strong { color: var(--text); font-weight: 600; }
+
+    aside { grid-area: sidebar; background: var(--panel); border-right: 1px solid var(--border); overflow-y: auto; transition: opacity 0.2s ease;}
+    .empty { padding: 32px 16px; color: var(--muted); text-align: center; font-size: 13px; }
+
+    /* ---- POS-style order card: the whole row is tinted by its status colour ---- */
+    .order {
+      position: relative;
+      padding: 9px 12px 9px 14px;
+      border-bottom: 2px solid var(--bg);
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      grid-template-areas:
+        "num addr  timer"
+        "num meta  meta";
+      column-gap: 12px;
+      row-gap: 3px;
+      align-items: center;
+      cursor: pointer;
+      color: #fff;                  /* default: white text on the colour bar */
+      background: var(--grey);      /* fallback; set per-status inline in JS */
+      transition: filter 0.1s;
+    }
+    .order:hover { filter: brightness(1.08); }
+    .order.selected { box-shadow: inset 0 0 0 3px #fff, 0 1px 0 rgba(0,0,0,0.4); }
+
+    /* orange bars get black text for contrast */
+    .order.dark-text { color: #141414; }
+
+    .order .nr {
+      grid-area: num;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+      font-size: 30px; line-height: 1;
+      letter-spacing: -0.5px;
+      align-self: center;
+    }
+    .order .timer {
+      grid-area: timer;
+      font-variant-numeric: tabular-nums;
+      font-size: 13px; font-weight: 700;
+      text-align: right; opacity: 0.92;
+    }
+    .order .addr {
+      grid-area: addr;
+      font-size: 13px; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .order .actions { grid-area: meta; display: flex; gap: 6px; align-items: center; }
+    .order .badge {
+      font-size: 10px; padding: 2px 6px; border-radius: 3px;
+      background: rgba(0,0,0,0.28); color: inherit;
+      border: 1px solid rgba(255,255,255,0.35);
+      text-transform: uppercase; letter-spacing: 0.4px; font-weight: 700;
+    }
+    .order.dark-text .badge { background: rgba(255,255,255,0.4); border-color: rgba(0,0,0,0.3); }
+    .order .badge.timed { background: var(--danger); color: #fff; border-color: transparent; }
+
+    .order .del {
+      margin-left: auto;
+      background: rgba(0,0,0,0.25); color: inherit;
+      border: 1px solid rgba(255,255,255,0.35); border-radius: 3px;
+      padding: 2px 8px; cursor: pointer; font-size: 11px; font-weight: 600;
+    }
+    .order.dark-text .del { background: rgba(255,255,255,0.35); border-color: rgba(0,0,0,0.3); }
+    .order .del:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+    #map { grid-area: map; height: 100%; background: #e8e0d8; }
+    .leaflet-container { background: #e8e0d8; }
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+      background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    }
+    .leaflet-popup-content { margin: 8px 12px; font-size: 12px; }
+    .leaflet-popup-content b { color: var(--text); }
+    /* ---- stream panel ---- */
+    #map { position: relative; overflow: hidden; }
+    #streamPanel {
+      position: absolute; top: 0; right: 0; bottom: 0;
+      width: 360px; max-width: 48vw;
+      background: var(--panel); border-left: 1px solid var(--border);
+      transform: translateX(100%); transition: transform 0.2s ease;
+      z-index: 500; display: flex; flex-direction: column;
+    }
+    #streamPanel.open { transform: translateX(0); }
+    #streamPanelHdr {
+      background: transparent; border-bottom: 1px solid var(--border);
+      padding: 8px 12px; font-size: 12px; color: var(--muted);
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+    #streamPanelHdr strong { color: var(--text); }
+    #streamImgWrap {
+      flex: 1; display: flex; align-items: center; justify-content: center;
+      background: #0a0c10; overflow: hidden; position: relative;
+    }
+    #streamImg {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%) rotate(-90deg);
+      transform-origin: center center;
+      max-width: none; max-height: none;
+    }
+    #streamToggle {
+      position: absolute; top: 10px; right: 10px; z-index: 501;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 10px; cursor: pointer; font: inherit; font-size: 12px;
+      display: flex; align-items: center; gap: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    #streamToggle:hover { background: var(--panel-2); }
+    #streamToggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+    body:has(#streamPanel.open) #streamToggle { right: 370px; }
+    #sidebarToggle {
+      position: absolute; top: 10px; left: 10px; z-index: 501;
+      background: var(--panel); color: var(--text);
+      border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 10px; cursor: pointer; font: inherit; font-size: 12px;
+      display: flex; align-items: center; gap: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+    }
+    #sidebarToggle:hover { background: var(--panel-2); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="brand-logo"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" fill="currentColor" aria-hidden="true"><g transform="translate(0.000000,800.000000) scale(0.100000,-0.100000)"
+fill="currentColor" stroke="none">
+<path d="M5565 6376 c-44 -12 -97 -30 -117 -39 -21 -9 -40 -17 -42 -17 -30 0
+-192 -151 -563 -522 -403 -404 -445 -450 -482 -519 -88 -168 -77 -386 28 -539
+49 -71 109 -124 246 -215 199 -133 200 -135 172 -188 -42 -77 -58 -96 -90
+-103 -17 -3 -38 -10 -47 -14 -8 -5 -31 -14 -50 -21 -24 -8 -132 -109 -359
+-336 -278 -278 -326 -322 -340 -311 -40 30 -231 224 -231 235 0 6 12 21 28 33
+160 126 250 387 215 625 -31 213 -188 435 -306 435 -39 0 -103 -42 -138 -90
+-36 -48 -49 -39 -49 35 0 232 -180 535 -318 535 -47 0 -112 -44 -150 -100 -39
+-58 -45 -46 -48 85 -3 136 -20 197 -91 325 -111 201 -226 245 -338 130 -55
+-57 -63 -53 -63 33 -1 146 -60 313 -152 428 -72 89 -102 109 -169 109 -56 0
+-56 0 -121 -69 -77 -82 -141 -201 -169 -314 -25 -100 -40 -114 -56 -50 -27
+111 -191 284 -340 360 -129 67 -331 90 -391 45 -48 -37 -77 -102 -69 -159 15
+-114 50 -235 86 -293 5 -8 19 -33 30 -55 51 -93 207 -221 326 -266 35 -13 63
+-27 63 -30 0 -9 -39 -19 -75 -19 -36 0 -151 -39 -185 -63 -13 -9 -28 -17 -33
+-17 -14 0 -70 -42 -125 -95 -110 -104 -86 -204 78 -316 42 -29 141 -79 156
+-79 6 0 26 -7 44 -16 23 -12 69 -18 163 -21 137 -4 155 -8 122 -25 -11 -6 -46
+-37 -77 -69 -89 -90 -82 -150 26 -251 50 -46 215 -138 247 -138 9 0 33 -7 52
+-15 25 -10 71 -15 147 -15 122 0 135 -8 75 -48 -107 -69 -125 -176 -44 -258
+60 -61 142 -115 228 -151 119 -49 258 -62 389 -37 43 8 40 -6 -8 -35 -111 -69
+-175 -169 -150 -233 24 -60 162 -182 231 -203 13 -4 29 -12 36 -17 26 -21 199
+-58 273 -58 72 0 236 36 264 58 6 5 22 13 36 17 54 16 165 106 229 185 20 25
+20 25 130 -85 61 -60 111 -114 111 -119 0 -6 -280 -290 -622 -633 -713 -714
+-683 -677 -683 -832 0 -143 44 -222 160 -287 46 -26 59 -29 150 -29 162 1 119
+-35 835 687 413 416 631 629 642 627 9 -2 204 -189 435 -415 230 -225 454
+-444 498 -484 44 -41 158 -151 253 -245 159 -156 177 -170 209 -170 50 0 83
+42 63 80 -7 13 -312 321 -677 684 -364 363 -663 667 -663 675 0 9 141 157 313
+328 329 328 351 355 363 450 9 69 19 87 59 104 19 7 36 18 40 24 21 34 98 -44
+191 -195 102 -164 166 -232 269 -286 158 -84 343 -80 515 10 48 25 878 843
+951 938 100 129 139 255 140 448 0 215 -35 307 -201 514 -207 258 -711 753
+-880 863 -187 121 -405 159 -605 104z m-4260 -200 c17 -9 41 -21 55 -27 69
+-28 142 -89 196 -163 24 -33 44 -64 44 -70 0 -5 6 -17 13 -25 15 -17 49 -139
+51 -181 1 -24 -1 -25 -64 -24 -95 1 -181 38 -289 123 -90 71 -181 252 -181
+359 0 35 0 35 73 29 39 -3 86 -12 102 -21z m852 -13 c147 -190 147 -491 -1
+-666 -32 -40 -51 -32 -100 38 -132 189 -123 437 22 633 31 41 44 40 79 -5z
+m3643 17 c138 -26 202 -60 355 -185 101 -83 495 -469 638 -625 77 -84 207
+-265 207 -289 0 -6 8 -24 18 -38 14 -22 17 -50 17 -153 0 -214 15 -192 -529
+-737 -501 -501 -503 -503 -624 -503 -117 0 -180 50 -305 240 -42 63 -85 126
+-96 140 -29 36 -26 42 31 70 93 45 145 138 173 309 4 24 14 60 22 80 26 60 21
+197 -8 246 -77 131 -133 160 -287 153 -67 -3 -119 -11 -137 -21 -17 -8 -50
+-18 -75 -21 -157 -23 -263 -95 -285 -194 -3 -18 -8 -32 -11 -32 -2 0 -45 29
+-97 64 -51 35 -108 71 -126 80 -45 24 -123 104 -146 152 -31 63 -26 177 9 240
+40 70 904 932 970 968 89 48 207 71 286 56z m-3133 -547 c129 -185 131 -430 6
+-620 -42 -63 -61 -66 -101 -15 -86 110 -123 268 -98 416 23 132 96 269 147
+275 3 1 24 -25 46 -56z m-359 -291 c0 -43 3 -101 7 -129 10 -73 -4 -72 -77 3
+-76 79 -76 79 -41 97 15 8 43 36 62 61 19 25 38 46 42 46 4 0 7 -35 7 -78z
+m-665 17 c86 -15 230 -90 244 -125 18 -47 -148 -138 -284 -156 -95 -12 -241 2
+-279 27 -13 8 -29 15 -35 15 -15 0 -111 63 -128 84 -17 20 -6 35 55 76 119 80
+271 108 427 79z m1543 -247 c120 -179 120 -400 1 -594 -48 -78 -62 -82 -104
+-30 -127 159 -148 412 -49 581 78 132 90 136 152 43z m-1047 -23 c79 -78 79
+-92 3 -77 -26 5 -87 9 -137 9 l-89 -1 69 69 c39 37 72 69 75 70 3 0 39 -31 79
+-70z m670 -258 c-1 -38 5 -95 12 -125 7 -31 9 -59 5 -63 -4 -4 -39 25 -78 64
+l-71 71 54 61 c71 79 79 78 78 -8z m-644 12 c98 -25 225 -100 225 -132 0 -29
+-110 -97 -212 -131 -84 -28 -265 -26 -333 4 -109 48 -193 101 -194 123 -1 6
+20 27 47 46 144 104 296 133 467 90z m3360 -148 c29 -28 31 -61 11 -126 -8
+-24 -24 -89 -36 -144 -27 -120 -36 -145 -52 -145 -9 0 -12 13 -10 43 4 55 -13
+79 -61 80 -43 1 -66 -22 -67 -65 0 -39 32 -68 77 -68 48 0 38 -8 -34 -27 -32
+-8 -62 -18 -68 -23 -5 -4 -23 -10 -39 -14 -16 -4 -65 -25 -110 -47 -44 -21
+-85 -39 -91 -39 -14 0 -95 71 -95 83 0 10 44 109 74 167 8 14 17 43 21 65 8
+46 31 95 45 95 5 0 17 -11 26 -25 32 -49 124 -17 124 43 0 52 -77 78 -124 41
+-26 -20 -26 -20 -26 0 0 24 25 51 48 51 9 0 37 6 62 14 41 14 129 36 220 56
+61 13 80 11 105 -15z m-1852 -37 c67 -84 117 -222 117 -321 0 -134 -102 -367
+-160 -367 -25 0 -75 79 -125 195 -54 124 -22 341 70 479 44 67 54 68 98 14z
+m-1022 -78 c88 -88 91 -100 19 -75 -26 9 -78 15 -136 15 -52 0 -94 3 -94 7 0
+13 115 122 129 122 7 1 44 -30 82 -69z m669 -281 c3 -52 11 -104 18 -116 14
+-25 16 -53 3 -53 -17 0 -141 132 -141 150 0 11 8 24 18 29 10 5 31 28 47 51
+40 58 49 48 55 -61z m-690 51 c90 -17 241 -92 265 -131 9 -13 -14 -43 -49 -64
+-66 -41 -132 -75 -144 -75 -7 0 -35 -7 -62 -16 -101 -33 -271 -3 -392 69 -90
+54 -98 68 -58 104 106 94 291 142 440 113z m545 -289 c47 -46 82 -88 78 -92
+-5 -5 -37 -1 -73 7 -66 15 -215 15 -272 -1 -34 -9 -37 7 -5 22 12 6 54 42 92
+81 39 38 75 69 82 68 7 0 51 -39 98 -85z m1662 -19 c66 -35 99 -113 75 -175
+-11 -26 -1154 -1177 -1169 -1177 -8 0 -17 10 -22 23 -5 12 -43 55 -85 96 -42
+41 -75 78 -74 82 6 17 1124 1132 1153 1150 37 23 80 24 122 1z m-1644 -234
+c113 -34 210 -97 205 -131 -4 -30 -115 -100 -200 -128 -99 -31 -226 -31 -323
+2 -112 37 -195 92 -195 127 0 20 72 82 96 82 6 0 17 7 24 15 7 8 28 18 49 21
+20 4 50 13 66 20 49 22 196 17 278 -8z m407 -1098 c0 -48 -27 -64 -65 -37 -22
+17 -14 63 13 70 25 5 52 -11 52 -33z m-269 -171 c38 -38 3 -85 -45 -59 -30 16
+-32 22 -10 55 20 30 28 31 55 4z m144 -16 c7 -30 -13 -53 -47 -53 -19 0 -34
+40 -24 65 10 28 63 19 71 -12z m105 9 c0 -10 -22 -32 -32 -32 -4 0 -8 9 -8 20
+0 13 7 20 20 20 11 0 20 -4 20 -8z m-312 -102 c50 -51 87 -80 100 -80 12 0 22
+-6 22 -12 0 -7 -116 -128 -257 -269 -238 -237 -261 -257 -298 -261 -98 -12
+-182 87 -155 182 8 28 482 519 502 520 3 0 42 -36 86 -80z"/>
+</g></svg></span>
+      <span class="brand-text">
+        <span class="brand-title">Pizzaboer Planner</span>
+        <span class="brand-sub">Prototype v4</span>
+      </span>
+    </div>
+    <div class="stats">
+      <div class="stat"><strong id="count">0</strong> active</div>
+    </div>
+  </header>
+
+  <aside id="list"><div class="empty">No orders yet.</div></aside>
+  <div id="map">
+    <button id="sidebarToggle" type="button" aria-label="Toggle orders"><span>☰</span><span id="sidebarLbl">Hide</span></button>
+    <button id="streamToggle" type="button">
+      <span class="dot"></span><span id="streamLbl">Stream</span>
+    </button>
+    <div id="streamPanel">
+      <div id="streamPanelHdr"><strong>Live frame</strong><span id="streamStatus">—</span></div>
+      <div id="streamImgWrap"><img id="streamImg" alt=""></div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+  (() => {
+    "use strict";
+
+    // Store location (matches router.py defaults)
+    const STORE = [53.24657003069633, 6.587648954036653];
+
+    const map = L.map("map", { zoomControl: true }).setView(STORE, 13);
+    map.zoomControl.setPosition("bottomleft");   // clear the top-left for the floating Orders toggle
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      maxZoom: 19,
+    }).addTo(map);
+
+    L.marker(STORE, {
+      title: "Store",
+      icon: L.divIcon({
+        className: "store-marker",
+        html: '<div style="width:14px;height:14px;border-radius:50%;background:#1f6fd6;border:2px solid #fff;box-shadow:0 0 0 2px #1f6fd644"></div>',
+        iconSize: [18, 18], iconAnchor: [9, 9],
+      }),
+    }).addTo(map).bindPopup("<b>Store</b>");
+
+    // --- State: number -> { data, marker?, route? } ---
+    const orders = new Map();
+    let selectedNr = null;
+
+    // --- Helpers ---
+    function fmtCountdown(secs) {
+      if (secs <= 0) return "0:00";
+      const m = Math.floor(secs / 60);
+      const s = Math.floor(secs % 60);
+      return m + ":" + String(s).padStart(2, "0");
+    }
+    function timerClass(secs) {
+      if (secs <= 0) return "late";
+      if (secs <= 60) return "warn";
+      return "";
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+      })[c]);
+    }
+    // --- Age colour: green fresh -> orange @3min -> red @6min; timed greyed out ---
+    const AGE_COLORS = { green: "#0a7a12", orange: "#fb9600", red: "#ab0001", grey: "#858681" };
+    function ageBucket(o, nowSec) {
+      if (o.timed) return "grey";                 // scheduled: createdAt isn't a freshness signal
+      const age = nowSec - (o.createdAt || nowSec);
+      if (age >= 360) return "red";
+      if (age >= 180) return "orange";
+      return "green";
+    }
+    // --- Lifecycle pin/route colour: blue once it's in the store (oven/rack), cyan once out
+    //     for delivery (onroute). live/preparing keep the age colour (green -> orange -> red). ---
+    const STATUS_COLORS = { oven: "#1f6fd6", rack: "#1f6fd6", onroute: "#1a8fa6" };
+    function markerColor(o, nowSec) {
+      return STATUS_COLORS[o.status] ?? AGE_COLORS[ageBucket(o, nowSec)];
+    }
+    function routeStyle(color, selected) {
+      return selected
+        ? { color, weight: 5, opacity: 0.95 }
+        : { color, weight: 3, opacity: 0.5 };
+    }
+    function destIcon(color, selected, nr) {
+      const w = selected ? 32 : 27;            // pin width (px); height follows the viewBox ratio
+      const h = Math.round(w * 34 / 24);       // teardrop is 24x34 in viewBox units
+      const shadow = selected
+        ? `drop-shadow(0 0 3px ${color}) drop-shadow(0 2px 3px rgba(0,0,0,0.45))`
+        : `drop-shadow(0 2px 3px rgba(0,0,0,0.4))`;
+      const html = `
+        <svg width="${w}" height="${h}" viewBox="0 0 24 34"
+             xmlns="http://www.w3.org/2000/svg" style="filter:${shadow};overflow:visible">
+          <path d="M12 1 C5.9 1 1 5.9 1 12 c0 8.2 11 21 11 21 s11-12.8 11-21 C23 5.9 18.1 1 12 1 z"
+                fill="${color}" stroke="#fff" stroke-width="${selected ? 2 : 1.6}"/>
+          <text x="12" y="12.5" text-anchor="middle" dominant-baseline="central"
+                font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif"
+                font-size="11" font-weight="700" fill="#fff" letter-spacing="-0.5">${nr}</text>
+        </svg>`;
+      return L.divIcon({
+        className: "dest-marker",
+        html,
+        iconSize: [w, h],
+        iconAnchor: [w / 2, h],          // the tip sits exactly on the coordinate
+        popupAnchor: [0, -h + 4],
+      });
+    }
+    function cssEsc(s) { return (window.CSS && CSS.escape) ? CSS.escape(s) : String(s); }
+    // repaint a single sidebar row's colour in place (whole-row tint + black text on orange)
+    function applyRowColor(nr, color) {
+      const row = listEl.querySelector(`.order[data-nr="${cssEsc(nr)}"]`);
+      if (!row) return;
+      row.style.background = color;
+      row.classList.toggle("dark-text", color === AGE_COLORS.orange);
+    }
+
+    // --- Map layers ---
+    function addOrUpdateMapLayers(nr, d) {
+      const entry = orders.get(nr);
+      if (!entry) return;
+      if (d.status === "finished") {          // finished -> drop off the board
+        if (entry.marker) { entry.marker.remove(); entry.marker = null; }
+        if (entry.route)  { entry.route.remove();  entry.route = null; }
+        declutter();
+        return;
+      }
+      const selected = nr === selectedNr;
+      const nowSec = Date.now() / 1000;
+      entry.bucket = ageBucket(d, nowSec);
+      const color = markerColor(d, nowSec);
+      entry.color = color;
+
+      if (typeof d.lat === "number" && typeof d.lon === "number") {
+        entry.trueLatLng = [d.lat, d.lon];          // declutter offsets from this; routes anchor here
+        if (entry.marker) {
+          entry.marker.setLatLng(entry.trueLatLng);
+          entry.marker.setIcon(destIcon(color, selected, nr));
+        } else {
+          entry.marker = L.marker(entry.trueLatLng, { icon: destIcon(color, selected, nr) })
+            .addTo(map)
+            .bindPopup(`<b>#${escapeHtml(nr)}</b><br>${escapeHtml(d.address || "")}`)
+            .on("click", () => selectOrder(nr));
+        }
+      }
+
+      if (Array.isArray(d.route) && d.route.length) {
+        if (entry.route) entry.route.remove();
+        const layer = L.layerGroup();
+        for (const seg of d.route) {
+          try {
+            const geo = typeof seg === "string" ? JSON.parse(seg) : seg;
+            L.geoJSON(geo, { style: routeStyle(color, selected) }).addTo(layer);
+          } catch (_) { /* skip bad segment */ }
+        }
+        layer.addTo(map);
+        entry.route = layer;
+      } else if (entry.route) {
+        entry.route.eachLayer(l => l.setStyle && l.setStyle(routeStyle(color, selected)));
+      }
+      declutter();
+    }
+    function removeMapLayers(nr) {
+      const entry = orders.get(nr);
+      if (!entry) return;
+      if (entry.marker) entry.marker.remove();
+      if (entry.route) entry.route.remove();
+      declutter();
+    }
+    function refreshLayerStyles() {
+      const nowSec = Date.now() / 1000;
+      for (const [nr, e] of orders) {
+        e.bucket = ageBucket(e.data, nowSec);
+        const color = markerColor(e.data, nowSec);    // status colour (blue/cyan) or age drift
+        if (color !== e.color) {
+          e.color = color;
+          const sel = nr === selectedNr;
+          if (e.marker) e.marker.setIcon(destIcon(color, sel, nr));
+          if (e.route) e.route.eachLayer(l => l.setStyle && l.setStyle(routeStyle(color, sel)));
+          applyRowColor(nr, color);
+        }
+      }
+    }
+
+    // --- Pin declutter: fan out markers that overlap at the current zoom, recomputed on
+    //     zoom/move, always offsetting from each order's true coordinate so it stays stable. ---
+    function declutter() {
+      const pts = [];
+      for (const [nr, e] of orders) {
+        if (!e.marker || !e.trueLatLng) continue;
+        pts.push({ nr, e, ll: e.trueLatLng, p: map.latLngToLayerPoint(e.trueLatLng) });
+      }
+      const R = 22;                                  // px: closer than this counts as overlapping
+      const groups = [];
+      for (const pt of pts) {
+        const g = groups.find(grp => grp.some(o => o.p.distanceTo(pt.p) < R));
+        if (g) g.push(pt); else groups.push([pt]);
+      }
+      for (const g of groups) {
+        if (g.length === 1) { g[0].e.marker.setLatLng(g[0].ll); continue; }
+        const cx = g.reduce((s, o) => s + o.p.x, 0) / g.length;
+        const cy = g.reduce((s, o) => s + o.p.y, 0) / g.length;
+        const ringR = R * (g.length > 6 ? 1.7 : 1.15);
+        g.forEach((o, i) => {
+          const ang = (2 * Math.PI * i) / g.length;
+          const np = L.point(cx + ringR * Math.cos(ang), cy + ringR * Math.sin(ang));
+          o.e.marker.setLatLng(map.layerPointToLatLng(np));
+        });
+      }
+    }
+    map.on("zoomend moveend", declutter);
+
+    // --- Sidebar ---
+    const listEl = document.getElementById("list");
+    const countEl = document.getElementById("count");
+
+    function renderList() {
+      const nowSec = Date.now() / 1000;
+      const entries = [...orders.values()].map(e => e.data)
+        .filter(o => o.type !== "Carryout" && o.status !== "finished");
+      countEl.textContent = entries.length;
+
+      if (!entries.length) {
+        listEl.innerHTML = '<div class="empty">No orders yet.</div>';
+        return;
+      }
+
+      // timed first, then soonest countdown (none last), then number
+      // group by lifecycle stage: live/preparing on top, then timed, then oven, rack, onroute; number asc within
+      const STATUS_RANK = { live: 0, preparing: 0, oven: 2, rack: 3, onroute: 4, finished: 5 };
+      const rankOf = o => o.timed ? 1 : (STATUS_RANK[o.status] ?? 0);
+      entries.sort((a, b) => {
+        const ra = rankOf(a), rb = rankOf(b);
+        if (ra !== rb) return ra - rb;
+        return Number(a.number) - Number(b.number);
+      });
+
+      const now = Date.now() / 1000;
+      listEl.innerHTML = entries.map(o => {
+        const sel = o.number === selectedNr ? " selected" : "";
+        const rowColor = markerColor(o, nowSec);                 // blue=oven/rack, cyan=on-route, else age
+        const darkText = rowColor === AGE_COLORS.orange ? " dark-text" : "";
+        const hasTimer = typeof o.countdown === "number";
+        const secs = hasTimer ? o.countdown - now : null;
+        const timerHtml = hasTimer
+          ? `<span class="timer ${timerClass(secs)}" data-countdown="${o.countdown}">${fmtCountdown(secs)}</span>`
+          : '<span class="timer"></span>';
+        const timedBadge = o.timed ? '<span class="badge timed">timed</span>' : "";
+        return `
+          <div class="order${sel}${darkText}" data-nr="${escapeHtml(o.number)}" style="background:${rowColor}">
+            <span class="nr">${escapeHtml(o.number)}</span>
+            ${timerHtml}
+            <span class="addr">${escapeHtml(o.address || "—")}</span>
+            <span class="actions">
+              <span class="badge status">${escapeHtml(o.status)}</span>
+              ${timedBadge}
+              <button class="del" data-nr="${escapeHtml(o.number)}">delete</button>
+            </span>
+          </div>`;
+      }).join("");
+    }
+
+    // tick: update countdowns in place + re-evaluate age colour as orders cross 3min / 6min
+    setInterval(() => {
+      const now = Date.now() / 1000;
+      for (const el of listEl.querySelectorAll(".timer[data-countdown]")) {
+        const secs = parseFloat(el.dataset.countdown) - now;
+        el.textContent = fmtCountdown(secs);
+        el.classList.remove("warn", "late");
+        const cls = timerClass(secs);
+        if (cls) el.classList.add(cls);
+      }
+      for (const [nr, e] of orders) {
+        e.bucket = ageBucket(e.data, now);             // keep the age bucket current
+        const color = markerColor(e.data, now);        // oven/rack=blue, on-route=cyan, else age colour
+        if (color === e.color) continue;               // only repaint when the colour actually changes
+        e.color = color;
+        const sel = nr === selectedNr;
+        if (e.marker) e.marker.setIcon(destIcon(color, sel, nr));
+        if (e.route) e.route.eachLayer(l => l.setStyle && l.setStyle(routeStyle(color, sel)));
+        applyRowColor(nr, color);
+      }
+    }, 1000);
+
+    listEl.addEventListener("click", (e) => {
+      const delBtn = e.target.closest(".del");
+      if (delBtn) { e.stopPropagation(); deleteOrder(delBtn.dataset.nr); return; }
+      const row = e.target.closest(".order");
+      if (row) selectOrder(row.dataset.nr);
+    });
+
+    function selectOrder(nr) {
+      selectedNr = selectedNr === nr ? null : nr;
+      refreshLayerStyles();
+      renderList();
+      const entry = orders.get(nr);
+      if (entry?.marker && selectedNr === nr) {
+        map.panTo(entry.trueLatLng || entry.marker.getLatLng());
+        entry.marker.openPopup();
+      }
+    }
+
+    async function deleteOrder(nr) {
+      try {
+        await fetch(`/api/orders/${encodeURIComponent(nr)}`, { method: "DELETE" });
+        applyDelete(nr);   // optimistic; the broadcast will confirm
+      } catch (err) { console.error("delete failed", err); }
+    }
+
+    // --- Apply events ---
+    function applyUpsert(d) {
+      const nr = d.number;
+      let entry = orders.get(nr);
+      if (!entry) { entry = { data: { ...d } }; orders.set(nr, entry); }
+      else        { entry.data = { ...entry.data, ...d }; }
+      addOrUpdateMapLayers(nr, entry.data);
+      renderList();
+    }
+    function applyDelete(nr) {
+      if (!orders.has(nr)) return;
+      removeMapLayers(nr);
+      orders.delete(nr);
+      if (selectedNr === nr) selectedNr = null;
+      renderList();
+    }
+    function handleEvent(ev) {
+      if (!ev || typeof ev !== "object") return;
+      
+      if (ev.event === "deleted") {
+        applyDelete(ev.number);
+      } else if (ev.event === "new_frame") {
+        // Only fetch if the panel is actually open
+        if (streamPanel.classList.contains("open")) {
+          streamImg.src = "/latest.jpg?t=" + Date.now();
+        }
+      } else {
+        applyUpsert(ev);          // full order record
+      }
+    }
+
+    // --- SSE ---
+    function connect() {
+      const es = new EventSource("/events");
+
+      es.addEventListener("snapshot", (e) => {
+        try {
+          const arr = JSON.parse(e.data);
+          console.log("[snapshot]", arr);
+          for (const nr of [...orders.keys()]) removeMapLayers(nr);
+          orders.clear();
+          for (const o of arr) {
+            orders.set(o.number, { data: { ...o } });
+            addOrUpdateMapLayers(o.number, o);
+          }
+          renderList();
+        } catch (err) { console.error("bad snapshot", err); }
+      });
+
+      es.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          console.log("[event]", msg);    // every received update (server posts diffs only)
+          handleEvent(msg);
+        } catch (err) { console.error("bad event", err, e.data); }
+      };
+
+      es.onerror = () => { /* EventSource auto-reconnects */ };
+    }
+    // --- Stream panel ---
+    const streamPanel  = document.getElementById("streamPanel");
+    const streamToggle = document.getElementById("streamToggle");
+    const streamImg    = document.getElementById("streamImg");
+    const streamStatus = document.getElementById("streamStatus");
+    const streamLbl    = document.getElementById("streamLbl");
+    const streamWrap   = document.getElementById("streamImgWrap");
+
+    function fitStream() {
+      const nw = streamImg.naturalWidth, nh = streamImg.naturalHeight;
+      if (!nw || !nh) return;
+      const ww = streamWrap.clientWidth, wh = streamWrap.clientHeight;
+      const s = Math.min(ww / nh, wh / nw);      // axes swapped because image is rotated 90°
+      streamImg.style.width  = (nw * s) + "px";
+      streamImg.style.height = (nh * s) + "px";
+    }
+
+    function setStream(open) {
+      streamPanel.classList.toggle("open", open);
+      streamLbl.textContent = open ? "Hide" : "Stream";
+      
+      if (open) {
+        // Fetch the immediate frame right when they click open
+        streamImg.src = "/latest.jpg?t=" + Date.now();
+      } else {
+        // Clear it out when closed
+        streamImg.removeAttribute("src");
+        streamStatus.textContent = "—";
+      }
+      
+      setTimeout(() => { map.invalidateSize(); fitStream(); }, 220);
+    }
+    // --- Attach Listeners & Initialize ---
+    streamToggle.addEventListener("click", () => setStream(!streamPanel.classList.contains("open")));
+    streamImg.addEventListener("load",  () => { streamStatus.textContent = "live"; fitStream(); });
+    streamImg.addEventListener("error", () => { streamStatus.textContent = "no signal"; });
+    window.addEventListener("resize", fitStream);
+    
+    // --- Sidebar Toggle ---
+    const sidebarToggle = document.getElementById("sidebarToggle");
+    const sidebarLbl = document.getElementById("sidebarLbl");
+    sidebarToggle.addEventListener("click", () => {
+      const hidden = document.body.classList.toggle("hide-sidebar");
+      sidebarLbl.textContent = hidden ? "Orders" : "Hide";
+
+      // Wait for the CSS grid transition (0.2s) to finish before resizing the map.
+      setTimeout(() => {
+        map.invalidateSize();
+      }, 220); 
+    });
+
+    // Start listening to the server
+    connect();
+  })();
+  </script>
+</body>
+</html>
